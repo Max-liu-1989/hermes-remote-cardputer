@@ -687,16 +687,27 @@ class Bridge:
             self.state.confirm("没连上", "桥或后端断开", style="danger")
             await self.render_now()
             return
+        await self._submit_as_message(said)
+
+    async def _submit_as_message(self, text: str, *, note: str = "已发给助手 √") -> bool:
+        """当成一条普通消息发给助手（桌面端敲字走的也是 prompt.submit）。"""
+        sid = self.state.active.id if self.state.active else ""
+        if not sid or not self.gateway.connected:
+            self.state.confirm("没连上", "桥或后端断开", style="danger")
+            await self.render_now()
+            return False
         try:
             await self.gateway.call("prompt.submit",
-                                    {"session_id": sid, "text": said}, timeout=20)
+                                    {"session_id": sid, "text": text}, timeout=20)
         except GatewayError as exc:
             log.warning("prompt.submit failed: %s", exc)
             self.state.confirm("没发出去", str(exc)[:34], style="danger")
-        else:
-            self.audit.write("voice.prompt_submitted", session_id=sid, chars=len(said))
-            self.state.confirm("已发给助手 √", said[:30])
+            await self.render_now()
+            return False
+        self.audit.write("prompt.submitted", session_id=sid, chars=len(text), text=text[:200])
+        self.state.confirm(note, text[:30])
         await self.render_now()
+        return True
 
     # ── 作答 ────────────────────────────────────────────────────────────────
     async def _answer(self, result: dict) -> None:
@@ -721,6 +732,15 @@ class Bridge:
                 self._mark_answered(req.id)
                 self.audit.write("request.expired", request_id=req.id, method=req.method,
                                  session_id=req.session_id, age_s=round(req.age, 1))
+                # 提问卡失效后，按键的选择不能白按：当成一句普通消息发出去。
+                # 只对 clarify 这样做——审批绝不兜底成文字，那是安全底线。
+                said = self._choice_as_sentence(req, result)
+                if req.method == "clarify" and said:
+                    self._next_pending()
+                    self.audit.write("request.fallback_message", request_id=req.id,
+                                     session_id=req.session_id, text=said[:200])
+                    await self._submit_as_message(said, note="卡已过期 · 已当消息发出")
+                    return
                 self.state.confirm("后端说已过期", "去 Mac 上处理", style="danger")
                 self._next_pending()
             else:
@@ -739,6 +759,16 @@ class Bridge:
         self._mark_answered(req.id)
         self._next_pending()
         await self.render_now()
+
+    def _choice_as_sentence(self, req, result: dict) -> str:
+        """把"按了第 N 个选项"翻译成一句人能读的话，用于过期兜底。"""
+        answers = (result or {}).get("answers") or {}
+        picks = [str(v) for v in answers.values() if v]
+        if not picks:
+            return ""
+        q = str(req.question.get("question") or "").strip()
+        head = f"（提问卡已过期，我按的选择是「{picks[0]}」）"
+        return head if not q else f"{head} 原问题：{q[:60]}"
 
     @staticmethod
     def _confirm_words(req: PendingRequest, result: dict) -> tuple[str, str]:

@@ -338,3 +338,34 @@ class PendingCardLifecycleTests(unittest.IsolatedAsyncioTestCase):
         b._reconcile_pending({"open_requests": []})
         self.assertIsNotNone(b.state.pending, "轮询缺项不该撤卡")
         self.assertFalse(b._is_answered("R1"))
+
+
+class ExpiredClarifyFallbackTests(unittest.IsolatedAsyncioTestCase):
+    """提问卡在后端已经死掉时，按键的选择不能白按（审批不适用）。"""
+
+    async def test_expired_clarify_sends_choice_as_message(self) -> None:
+        gw = FakeGateway(rpc_result={"status": "expired"})
+        b = make_bridge(gw)
+        from hermes_remote.state import SessionRow
+        b.state.sessions = [SessionRow(id="s", title="会话", status="working")]
+        b.state.connected_backend = True
+        b.state.pending = PendingRequest(
+            id="Q1", method="clarify",
+            params={"questions": [{"qid": "q1", "question": "先做哪个？",
+                                   "choices": ["列表", "详情"]}]})
+        b.state.pending.choice_page = 0
+        from hermes_remote.safety import clarify_result
+        await b._answer(clarify_result({"q1": "详情"}))
+        submitted = [c for c in gw.calls if c[0] == "prompt.submit"]
+        self.assertEqual(len(submitted), 1, "过期后应把选择当成消息发出去")
+        self.assertIn("详情", submitted[0][1]["text"])
+        self.assertIsNone(b.state.pending)
+
+    async def test_expired_approval_never_becomes_a_message(self) -> None:
+        gw = FakeGateway(rpc_result={"status": "expired"})
+        b = make_bridge(gw)
+        b.state.pending = approval_req("A")
+        from hermes_remote.safety import approval_result
+        await b._answer(approval_result(b.state.pending.params, "once"))
+        self.assertFalse([c for c in gw.calls if c[0] == "prompt.submit"],
+                         "审批过期只能回主端处理，绝不能兜底成文字")
