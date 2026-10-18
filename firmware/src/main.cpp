@@ -24,7 +24,7 @@ static constexpr uint32_t HEARTBEAT_MS = 15000;
 static constexpr uint32_t PROVISION_WINDOW_MS = 8000;
 static constexpr int MIC_RATE = 16000;
 static constexpr int MIC_CHUNK_SAMPLES = 1600;   // 100ms @16k
-static constexpr int MIC_MAX_MS = 30000;   // 协议上限 960KB ≈ 30s @16k/16bit
+static constexpr int MIC_MAX_MS = 120000;  // 2 分钟（协议上限同步放宽到 3.84MB）
 
 struct Settings {
   String ssid;

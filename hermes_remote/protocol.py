@@ -207,7 +207,7 @@ VOICE_HEADER = struct.Struct(">BH")
 VOICE_HEADER_LEN = VOICE_HEADER.size  # 3 字节
 
 #: 桥侧一条语音最多攒这么多字节（16k/16bit 约 30 秒）
-MAX_VOICE_BYTES = 960_000
+MAX_VOICE_BYTES = 3_840_000    # 120s @16k/16bit（原来 30s 太短）
 
 
 def voice_chunk_frame(pcm: bytes) -> bytes:

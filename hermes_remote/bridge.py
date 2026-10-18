@@ -58,6 +58,8 @@ class Bridge:
         self._rediscover = rediscover
         self.seq = 0
         self._last_view_key: str | None = None
+        #: 上一次"点亮背光"时的内容指纹：同一张卡重复刷新不再唤醒
+        self._last_wake_key: str | None = None
         self._last_sent_at: float = 0.0
         self._last_device_count: int = 0
         self._queue: list[PendingRequest] = []
@@ -844,8 +846,15 @@ class Bridge:
             self.seq = (self.seq + 1) & 0xFFFF
             try:
                 # 只有"要你动手/看一眼"的页面才点亮背光：审批卡、提问、回复、按键回声。
-                # 状态页的工具流不算——否则 agent 一干活，屏幕就永远亮着，等于没做省电。
-                want_wake = wake and view.page in ("prompt", "reply", "confirm", "voice")
+                # 而且只在**内容真的变了**时点亮一次：同一张卡每 5 秒的保活帧不唤醒，
+                # 否则一张卡挂着 5 分钟，屏幕就亮 5 分钟。
+                important = view.page in ("prompt", "reply", "confirm", "voice")
+                want_wake = wake and important and key != self._last_wake_key
+                if want_wake:
+                    self._last_wake_key = key
+                elif view.page == "status" and self.state.pending is None:
+                    # 回到状态页就是"没有待办"：清掉指纹，下次有重要页面再点亮
+                    self._last_wake_key = None
                 frame = renderer.frame_for(view, self.seq, self.fonts, wake=want_wake)
             except Exception:
                 log.exception("render failed")
