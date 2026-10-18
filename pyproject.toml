@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-remote"
+version = "1.0.0"
+description = "Cardputer-Adv 作为 Hermes 的第二块屏与远程审批键：Mac 侧桥"
+requires-python = ">=3.10"
+dependencies = [
+  "websockets>=12",
+  "aiohttp>=3.9",
+  "pillow>=10",
+]
+
+[project.optional-dependencies]
+stt = ["faster-whisper>=1.0"]
+serial = ["pyserial>=3.5"]
+dev = []
+
+[project.scripts]
+hermes-remote = "hermes_remote.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["hermes_remote*"]
