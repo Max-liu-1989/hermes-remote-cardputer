@@ -179,6 +179,9 @@ class BridgeState:
         self.choice_page: int = 0
         #: 键盘打字作答（开放式提问没有选项时的后路）
         self.input_text: str | None = None
+        #: 语音转写确认页的分页（长句一屏放不下；以前只画一行，后面全被截掉）
+        self.voice_pages: list[list[str]] = []
+        self.voice_page: int = 0
         #: 提问正文分页（问题太长时 fn/del 翻；每页最多 2 行）
         self.q_pages: list[list[str]] = []
         self.q_page: int = 0
@@ -614,6 +617,17 @@ class BridgeState:
 
     def _voice_view(self) -> View:
         text = self.voice_preview or ""
+        pages = self.voice_pages or [[text or "…"]]
+        self.voice_page = max(0, min(self.voice_page, len(pages) - 1))
+        lines = [ViewLine("转写结果", "label", wrap=False)]
+        lines += [ViewLine(t, "body", wrap=False) for t in pages[self.voice_page][:4] if t]
+        if not lines[1:]:
+            lines.append(ViewLine("…", "dim", wrap=False))
+        # 底栏按宽度精简：页数 + 键位提示
+        bits = [f"{self.voice_page + 1}/{len(pages)}"] if len(pages) > 1 else []
+        bits.append("[fn]翻" if len(pages) > 1 else "enter发")
+        bits.append("[enter]发出")
+        bits.append("[mic]重录")
+        footer = " ".join(bits) if len(pages) > 1 else "[enter]发出  [mic]重录  [esc]放弃"
         return View(page=PAGE_VOICE, title="说的话（确认才发）", bar="ok",
-                    lines=[ViewLine("转写结果", "label"), ViewLine(text or "…", "body")],
-                    footer="[enter]发出  [mic]重录  [esc]放弃", hint="enter")
+                    lines=lines, footer=footer, hint="enter", dense=True)

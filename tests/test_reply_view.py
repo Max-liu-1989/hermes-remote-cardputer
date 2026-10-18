@@ -155,3 +155,39 @@ class ReplyQueueTests(unittest.IsolatedAsyncioTestCase):
         await b.on_key("space")
         self.assertEqual(b.state.pending.id, "B")
         self.assertEqual([q.id for q in b._queue], ["A"], "换过的那张要排到队尾，不能丢")
+
+
+class VoicePreviewPagingTests(unittest.IsolatedAsyncioTestCase):
+    """语音转写确认页：以前整段塞一行，后半句直接被截掉。"""
+
+    async def _bridge(self, text: str):
+        b = make_bridge(FakeGateway())
+        b.state.connected_backend = True
+        b.state.voice_preview = text
+        b.state.voice_pages = b._voice_pages(text)
+        b.state.voice_page = 0
+        return b
+
+    async def test_long_transcript_gets_multiple_pages(self) -> None:
+        text = "把后端的 token 换成文件里的那个，然后重新起一次桥，注意这次不要把桥挂在后台。" * 3
+        b = await self._bridge(text)
+        self.assertGreater(len(b.state.voice_pages), 1)
+        view = b.state.build_view()
+        self.assertEqual(view.page, "voice")
+        self.assertIn(f"1/{len(b.state.voice_pages)}", view.footer)
+
+    async def test_fn_pages_through_transcript(self) -> None:
+        text = "写得长一点才会分页。" * 40
+        b = await self._bridge(text)
+        before = b.state.voice_page
+        await b._on_voice_key("fn1")
+        self.assertGreater(b.state.voice_page, before)
+        await b._on_voice_key("back")
+        self.assertEqual(b.state.voice_page, before)
+
+    async def test_pages_cover_the_whole_transcript(self) -> None:
+        """分页只是排版：把所有页拼回去必须等于原文（末页孤零零的句号允许被丢）。"""
+        text = ("把后端的 token 换成文件里的那个，然后重新起一次桥，注意不要把桥挂在后台。" * 4)
+        pages = make_bridge(FakeGateway())._voice_pages(text)
+        joined = "".join("".join(page) for page in pages).replace(" ", "")
+        self.assertEqual(joined.rstrip("。"), text.replace(" ", "").rstrip("。"))

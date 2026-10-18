@@ -354,6 +354,8 @@ class Bridge:
             await self.render_now()
             return
         self.state.voice_preview = text.strip()
+        self.state.voice_pages = self._voice_pages(text.strip())
+        self.state.voice_page = 0
         self.state.note("按 enter 才发出")
         self.audit.write("voice.staged", chars=len(text), source="device-endpoint")
         await self.render_now()
@@ -396,8 +398,15 @@ class Bridge:
             self.state.opt_pages = self._option_pages(req.choices) if req.choices else []
             self.state.opt_page = 0
 
+    def _voice_pages(self, text: str) -> list[list[str]]:
+        """语音确认页一页只放 4 行（第一行是"转写结果"标签）。"""
+        return self._wrap_pages(text, per_page=4)
+
     def _reply_pages(self, text: str) -> list[list[str]]:
         """把回复按屏幕宽度折行、5 行一页（用紧凑页的 15px 字体量）。"""
+        return self._wrap_pages(text, per_page=5)
+
+    def _wrap_pages(self, text: str, per_page: int = 5) -> list[list[str]]:
         f = self.fonts.compact
         max_w = renderer.W - 14
         lines: list[str] = []
@@ -410,7 +419,11 @@ class Bridge:
             lines.extend(renderer.wrap_text(para, f, max_w, max_lines=99))
         while lines and lines[-1] == "":
             lines.pop()
-        return [lines[i:i + 5] for i in range(0, len(lines), 5)] or [[""]]
+        pages = [lines[i:i + per_page] for i in range(0, len(lines), per_page)] or [[""]]
+        # 别留一整页只有标点：把尾巴并回上一页最后一行
+        if len(pages) > 1 and not pages[-1][0].strip("。，、；：！？.,;:!? "):
+            pages.pop()          # 只剩标点的一页直接丢掉（并回上一页会撑出省略号）
+        return pages
 
     async def _on_status_key(self, key: str, now: float) -> None:
         if getattr(self.state.build_view(now), "page", "") == PAGE_REPLY:
@@ -624,6 +637,14 @@ class Bridge:
         await self._answer(approval_result(req.params, choice))
 
     async def _on_voice_key(self, key: str) -> None:
+        if key in ("fn1", "back"):
+            # 长句一屏放不下：fn 往后翻、del 往前翻（和回复页同一套手感）
+            total = len(self.state.voice_pages)
+            if total > 1:
+                step = 1 if key == "fn1" else -1
+                self.state.voice_page = max(0, min(total - 1, self.state.voice_page + step))
+                await self.render_now(force=True)
+            return
         if key in ("enter", "confirm"):
             text = self.state.voice_preview or ""
             await self._submit_voice_text(text)
@@ -804,6 +825,8 @@ class Bridge:
         text = await asyncio.to_thread(self.transcriber.transcribe, pcm, rate=rate,
                                        prompt_extra=ctx)
         self.state.voice_preview = text.strip()
+        self.state.voice_pages = self._voice_pages(text.strip())
+        self.state.voice_page = 0
         self.audit.write("voice.transcribed", chars=len(text), pcm_bytes=len(pcm))
         await self.render_now()
         return text
