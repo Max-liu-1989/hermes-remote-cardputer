@@ -1,5 +1,7 @@
 # hermes-remote
 
+**中文** · [English](README.en.md)
+
 把 **M5Stack Cardputer-Adv** 变成 AI agent 的**第二块屏 + 审批键盘**：屏幕上实时显示 agent 在做什么，需要你拍板时直接按键批准/拒绝，按住侧键说话就能给它发消息。
 
 面向局域网（同一 Wi-Fi）：一台 Mac 跑桥接进程，一块 ESP32-S3 小板子当终端。不做广域网远控。
