@@ -467,7 +467,7 @@ class BridgeState:
             secs = max(0, int(now - row.turn_started_at))
             # 只显示到分钟：按秒显示会让“画面签名”每秒都变，桥就得每秒重发整屏 → 屏上一秒闪一次
             if secs >= 60:
-                elapsed = f" 已跑{secs // 60}m"
+                elapsed = f"{secs // 60}m"     # 底栏寸土寸金：不再写"已跑"
         status = STATUS_LABEL.get(row.status, row.status or "待命")
         # 紧凑状态页：工具+结果成对滚动。一页 2 对（4 行）+ 最多 1 行补充
         entries = self.recent
@@ -513,7 +513,9 @@ class BridgeState:
             if self.device_battery is not None:
                 footer_bits.append(f"电{self.device_battery}%")
             if self.device_rssi is not None:
-                footer_bits.append(f"{self.device_rssi}dBm")
+                # 单位省掉（左边"电86%"已经给了语境）；弱信号才加感叹号
+                weak = self.device_rssi < -75
+                footer_bits.append(f"{self.device_rssi}{'!' if weak else ''}")
         footer = "  ".join(footer_bits)
         return View(page=PAGE_STATUS, title=row.short_title or "Hermes 遥控器",
                     bar="normal" if not row.running else "ok",
@@ -535,6 +537,8 @@ class BridgeState:
                         footer="[enter]发送 [del]删字 [esc]放弃", hint="enter")
         n = len(req.questions)
         head = f"问题 {req.q_index + 1}/{n}" if n > 1 else "等你决定"
+        if req.age > 300:                 # 5 分钟没处理：后端多半早已不认这张卡
+            head = "可能已过期"
         if self.opt_pages:
             total_opt = len(self.opt_pages)
             self.opt_page = max(0, min(self.opt_page, total_opt - 1))
@@ -590,6 +594,8 @@ class BridgeState:
 
         page = max(0, min(req.page, facts.page_count - 1))
         head = "危险操作" if facts.dangerous else "等你放行"
+        if req.age > 300 and not req.confirm_armed:
+            head = "可能已过期"
         lines = [ViewLine(f"{head} · {tool}", "danger" if facts.dangerous else "label")]
         for ln in (facts.pages[page] if facts.pages else ()):
             lines.append(ViewLine(ln, "body"))

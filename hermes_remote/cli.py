@@ -87,6 +87,7 @@ async def _cmd_run(args: argparse.Namespace) -> int:
             loop.add_signal_handler(sig, _stop)
         except NotImplementedError:
             pass
+    os.environ["HERMES_REMOTE_WARMUP"] = "1"   # 只有 CLI 起的桥才预热语音模型
     await bridge.start()
     try:
         await asyncio.wait_for(stop.wait(), timeout=None)

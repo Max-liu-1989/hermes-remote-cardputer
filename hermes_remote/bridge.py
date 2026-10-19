@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import secrets
 import time
 from dataclasses import dataclass
@@ -19,7 +20,7 @@ from .device_server import DeviceHub
 from .gateway import GatewayClient, GatewayError, RpcError, build_url
 from .safety import (approval_choice_label, approval_key_map, approval_result,
                      clarify_result)
-from .stt import TranscriptionUnavailable
+from .stt import Transcriber, TranscriptionUnavailable
 from .state import (CONFIRM_WINDOW_S, PAGE_PROMPT, PAGE_REPLY, PAGE_VOICE, BridgeState,
                     PendingRequest, SessionRow, View, _is_bot_session)
 
@@ -95,6 +96,11 @@ class Bridge:
     # ── 启动/停止 ───────────────────────────────────────────────────────────
     def _warm_stt(self) -> None:
         """后台把语音模型跑热：首次加载要几十秒，不能在用户按下侧键后才开始。"""
+        # 只有真正的 run 才预热：单测里构造的桥不该去加载 1.6GB 模型
+        if os.environ.get("HERMES_REMOTE_WARMUP") != "1":
+            return
+        if self.transcriber is None or getattr(self.transcriber, "is_fake", False):
+            return                      # 没启用 / 测试用的假识别器：没有模型可热，别拖慢事件循环
         import threading
 
         def run() -> None:
@@ -319,6 +325,9 @@ class Bridge:
         now = time.time()
         self.state.last_key_at = now
         view = self.state.build_view(now)
+        # 排查"按了没反应"：每次按键都留一行，能看到到底有没有到、落在哪个页面
+        log.info("key %r page=%s pending=%s", key, view.page,
+                 "none" if self.state.pending is None else self.state.pending.method)
         if key.startswith("char:"):
             await self._on_char(key.split(":", 1)[1])
             return
@@ -375,18 +384,23 @@ class Bridge:
     def _option_pages(self, choices: list) -> list[list[str]]:
         """把选项排成"每页最多 2 行"：能并排就并排，太长就一行一个。"""
         f = self.fonts.compact_small
-        max_w = renderer.W - 12
+        # 留足边距：按 W-12 排完，渲染器还要再量一次，会从 "[3]" 中间折行
+        max_w = renderer.W - 22
         items = [f"[{i + 1}]{str(c)}" for i, c in enumerate(choices)]
         lines: list[str] = []
         buf = ""
+        per_line = 0
         for it in items:
             cand = f"{buf}  {it}" if buf else it
-            if buf and f.getlength(cand) <= max_w:
+            # 每行最多两个选项：三个挤一行时渲染器会从词中间折行（"[3]都先不/动"）
+            if buf and per_line < 2 and f.getlength(cand) <= max_w:
                 buf = cand
+                per_line += 1
             else:
                 if buf:
                     lines.append(buf)
                 buf = it
+                per_line = 1
         if buf:
             lines.append(buf)
         return [lines[i:i + 2] for i in range(0, len(lines), 2)] or [[""]]
@@ -525,6 +539,11 @@ class Bridge:
             await self.render_now(force=True)
             return
         if key in ("esc",):
+            # 顺手清掉队列里已经过期的卡：否则清一张、浮一张，看着像"卡死"
+            before = len(self._queue)
+            self._queue = [q for q in self._queue if q.age <= 300]
+            if before != len(self._queue):
+                log.info("esc: dropped %d stale queued card(s)", before - len(self._queue))
             if req.method == "clarify":
                 await self._answer(clarify_result({}))
             else:
@@ -849,11 +868,43 @@ class Bridge:
         if self.transcriber is None:
             raise TranscriptionUnavailable("语音转写没启用")
         # 用当前会话上下文做热词：最近回复 + 最近工具目标（专有名词/路径最容易听错）
+        # 音频体检：时长/RMS/峰值。真机上"听不清"往往不是模型的问题，
+        # 而是根本没录到声音（麦克风没开、电平过低），这两个数一看就知道。
+        import numpy as _np
+        _a = _np.frombuffer(pcm, dtype="int16").astype("float32") / 32768.0
+        _dur = len(_a) / float(rate or 16000)
+        _rms = float(_np.sqrt(_np.mean(_a * _a))) if _a.size else 0.0
+        _peak = float(_np.max(_np.abs(_a))) if _a.size else 0.0
+        log.info("voice pcm: %.1fs rms=%.3f peak=%.3f", _dur, _rms, _peak)
+        # 只对真实识别器做体检：测试里的假音频只有几十字节，不该被拦
+        _real = isinstance(self.transcriber, Transcriber)
+        if _dur < 0.5 and _real:
+            self.state.voice_preview = ""
+            self.state.voice_pages = []
+            self.state.note("太短了，按住侧键说话")
+            await self.render_now()
+            return ""
+        if _rms < 0.004 and _real:
+            self.state.voice_preview = ""
+            self.state.voice_pages = []
+            self.state.note("没听到声音，检查麦克风")
+            await self.render_now()
+            return ""
+
         ctx = " ".join([self.state.last_reply or ""] +
                        [str(e.get("target") or "") for e in self.state.recent[-3:]] +
                        [str(e.get("summary") or "")[:40] for e in self.state.recent[-3:]])
-        text = await asyncio.to_thread(self.transcriber.transcribe, pcm, rate=rate,
-                                       prompt_extra=ctx)
+        try:
+            # MLX 偶发卡住（模型加载与推理抢 Metal，或 HF 缓存检查走网络）：
+            # 不能让板子永远停在“识别中”，超时就明确失败。
+            text = await asyncio.wait_for(
+                asyncio.to_thread(self.transcriber.transcribe, pcm, rate=rate,
+                                  prompt_extra=ctx), timeout=90)
+        except asyncio.TimeoutError:
+            self.state.recording = self.state.transcribing = False
+            self.state.confirm("识别超时", "再说一次，或重启桥", style="danger")
+            await self.render_now(force=True)
+            raise TranscriptionUnavailable("transcribe timeout")
         self.state.voice_preview = text.strip()
         self.state.voice_pages = self._voice_pages(text.strip())
         self.state.voice_page = 0

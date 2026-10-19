@@ -53,7 +53,9 @@ class ReplyViewTests(unittest.IsolatedAsyncioTestCase):
         b.hub.last_hello = {"batt": 95, "rssi": -66}
         await b.render_now(force=True)
         self.assertIn("电95%", b.state.build_view().footer)
-        self.assertIn("-66dBm", b.state.build_view().footer)
+        # 底栏单位已省（"-66"）；弱于 -75 才带感叹号
+        self.assertIn("-66", b.state.build_view().footer)
+        self.assertNotIn("dBm", b.state.build_view().footer)
 
     async def test_enter_dismisses_reply(self) -> None:
         b = await self._bridge_with_reply()
