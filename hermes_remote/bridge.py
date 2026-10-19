@@ -936,7 +936,7 @@ class Bridge:
             self._queue = [q for q in self._queue if q.age <= 600]
             if before != len(self._queue):
                 log.info("auto-drop %d stale queued card(s)", before - len(self._queue))
-            self.state.note("旧卡已自动清除")
+            self.state.note("过期卡已清除")
             self._next_pending()
         await self._announce_pending()
         # 屏上"待批 N"用：当前这张卡 + 队列里的
