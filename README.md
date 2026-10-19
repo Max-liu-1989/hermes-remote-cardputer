@@ -6,6 +6,8 @@
 
 面向局域网（同一 Wi-Fi）：一台 Mac 跑桥接进程，一块 ESP32-S3 小板子当终端。不做广域网远控。
 
+![M5Stack Cardputer-Adv 上显示的 Hermes 状态页](screens/device.jpg)
+
 | 状态页 | 审批 | 提问 |
 |---|---|---|
 | ![status](screens/screen-status.png) | ![approval](screens/screen-approval.png) | ![clarify](screens/screen-clarify.png) |

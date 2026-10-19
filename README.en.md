@@ -6,6 +6,8 @@ Turn an **M5Stack Cardputer-Adv** into a **second screen and approval keypad** f
 
 Designed for a local network (same Wi-Fi): a Mac runs the bridge, an ESP32-S3 board acts as the terminal. No WAN remote control.
 
+![Hermes status page on an M5Stack Cardputer-Adv](screens/device.jpg)
+
 | Status | Approval | Question |
 |---|---|---|
 | ![status](screens/screen-status.png) | ![approval](screens/screen-approval.png) | ![clarify](screens/screen-clarify.png) |
