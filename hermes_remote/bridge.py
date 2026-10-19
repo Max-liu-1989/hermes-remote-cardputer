@@ -926,6 +926,18 @@ class Bridge:
             await self.hub.broadcast_text({"t": "notify", "kind": "request"})
 
     async def render_now(self, *, force: bool = False, wake: bool = True) -> None:
+        # 旧卡自清：超过 10 分钟的请求在后端早已作废，留在屏上只会让人一直按、一直不生效
+        req = self.state.pending
+        if req is not None and req.age > 600:
+            log.info("auto-drop stale card %s (age %.0fs)", req.id, req.age)
+            self._mark_answered(req.id)
+            self.state.pending = None
+            before = len(self._queue)
+            self._queue = [q for q in self._queue if q.age <= 600]
+            if before != len(self._queue):
+                log.info("auto-drop %d stale queued card(s)", before - len(self._queue))
+            self.state.note("旧卡已自动清除")
+            self._next_pending()
         await self._announce_pending()
         # 屏上"待批 N"用：当前这张卡 + 队列里的
         self.state.queue_len = (1 if self.state.pending is not None else 0) + len(self._queue)
