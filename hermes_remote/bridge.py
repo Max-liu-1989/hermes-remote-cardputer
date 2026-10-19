@@ -139,8 +139,9 @@ class Bridge:
             task.cancel()
         for task in self._tasks:
             try:
-                await task
-            except (asyncio.CancelledError, Exception):
+                # 关桥不能无限等：某个任务卡在同步调用里时，这里会一直挂着（测试里就是这样）
+                await asyncio.wait_for(task, timeout=3.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
                 pass
         self._tasks.clear()
         if self.beacon is not None:
