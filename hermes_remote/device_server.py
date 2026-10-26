@@ -35,6 +35,8 @@ class DeviceHub:
         self.on_voice_upload = on_voice_upload
         self.on_voice_state = on_voice_state
         self.clients: set[web.WebSocketResponse] = set()
+        #: ws -> 远端地址：用来识别"同一台设备又连了一次"
+        self._remote_of: dict = {}
         self.last_frame: bytes | None = None
         self.last_hello: dict | None = None
         #: 一次性语音 token → (文本, 生成时间)；只保留最后一句，且 120 秒后失效
@@ -98,7 +100,23 @@ class DeviceHub:
                 await ws.close(code=4401, message=b"bad token")
                 return ws
             await ws.send_str(json.dumps({"t": "welcome", "proto": 1}))
+        # 同一台设备重建连接时，先关掉它的旧 socket。否则旧连接还挂着，板子可能把
+        # 语音帧发到旧 socket，而桥已经把录音缓冲归给新连接 —— 表现就是"卡在识别中"。
+        remote = request.remote or ""
+        for old in list(self.clients):
+            if self._remote_of.get(old) == remote and old is not ws:
+                log.info("replacing stale connection from %s", remote)
+                if self._voice_owner is old:
+                    self._voice = None
+                    self._voice_owner = None
+                try:
+                    await old.close(code=4000, message=b"replaced")
+                except Exception:
+                    pass
+                self.clients.discard(old)
+                self._remote_of.pop(old, None)
         self.clients.add(ws)
+        self._remote_of[ws] = remote
         log.info("device connected %s (%d online)", request.remote, len(self.clients))
         try:
             if self.last_frame:
@@ -112,6 +130,7 @@ class DeviceHub:
                     break
         finally:
             self.clients.discard(ws)
+            self._remote_of.pop(ws, None)
             if self._voice_owner is ws:
                 self._voice = None
                 self._voice_owner = None

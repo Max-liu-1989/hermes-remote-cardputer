@@ -16,18 +16,26 @@ ready file 只写 ``{"port": N}``。桥是另一个进程，平时没有任何�
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
+import socket
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 
 log = logging.getLogger("hermes_remote.desktop_discovery")
 
 TOKEN_ENV = "HERMES_DASHBOARD_SESSION_TOKEN"
 DESKTOP_ENV = "HERMES_DESKTOP"
 
+#: 桥自己保存后端 token 的位置（0600）。0.22.x 起桌面端不再把 token 注入可读环境，
+#: 改为由 launchd 的 gateway 从 ``HERMES_DASHBOARD_SESSION_TOKEN`` 读固定值，桥读同一份。
+TOKEN_PATH = Path.home() / ".hermes-remote" / "backend.token"
+
 _PORT_RE = re.compile(r"^n(?:127\.0\.0\.1|\[::1\]|localhost):(\d+)$")
+_ORIGIN_RE = re.compile(r"^https?://(?:127\.0\.0\.1|\[::1\]|localhost):(\d+)$")
 
 
 @dataclass(frozen=True)
@@ -92,8 +100,75 @@ def _listen_port(pid: int) -> int | None:
     return None
 
 
+def _control_query(home: Path, payload: dict, timeout: float = 5.0) -> dict | None:
+    """向 gateway 的 control socket 发一条 JSON 请求，返回解析后的响应。
+
+    ``~/.hermes/gateway.sock`` 是网关自己的本地协调面（``gateway/control_socket.py``），
+    只接受同 uid 的 peer —— 桥和 gateway 是同一个用户，所以这是官方留的正规入口。
+    """
+    path = home / "gateway.sock"
+    if not path.exists():
+        return None
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+            sock.connect(str(path))
+            sock.sendall(json.dumps(payload).encode("utf-8") + b"\n")
+            data = b""
+            while b"\n" not in data:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                data += chunk
+    except (OSError, ValueError) as exc:
+        log.debug("control socket %s failed: %s", path, exc)
+        return None
+    try:
+        return json.loads(data.decode("utf-8"))
+    except ValueError as exc:
+        log.debug("control socket returned non-JSON: %s", exc)
+        return None
+
+
+def _read_token_file() -> str:
+    try:
+        return TOKEN_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def find_gateway_backend() -> DesktopBackend | None:
+    """通过 control socket 找网关：``identify`` 拿 ``api_origin``，token 读 0600 文件。
+
+    0.22.x 起桌面端把后端交给 launchd 托管（``gateway run``），端口随机、token 不再
+    注入任何可读环境 —— 老办法（``ps eww`` 找 ``HERMES_DESKTOP=1``）在新版必然失败。
+    ``identify`` 直接回 ``api_origin``，这是端口唯一可靠的来源。
+    """
+    home = Path(os.environ.get("HERMES_HOME") or (Path.home() / ".hermes"))
+    resp = _control_query(home, {"protocol": 1, "verb": "identify", "id": 1})
+    if not resp or resp.get("ok") is not True:
+        return None
+    result = resp.get("result")
+    if not isinstance(result, dict):
+        return None
+    match = _ORIGIN_RE.match(str(result.get("api_origin") or ""))
+    if not match:
+        log.debug("identify 没给出可用的 api_origin: %r", result.get("api_origin"))
+        return None
+    token = _read_token_file()
+    if not token:
+        log.debug("缺失后端 token 文件 %s", TOKEN_PATH)
+        return None
+    return DesktopBackend(pid=int(result.get("pid") or 0), port=int(match.group(1)), token=token)
+
+
 def find_desktop_backend() -> DesktopBackend | None:
     """返回桌面 App 的后端（pid/port/token）；找不到就返回 None。"""
+    # 新版（gateway 托管）优先：control socket 是官方入口，端口随机也能拿到。
+    found = find_gateway_backend()
+    if found is not None:
+        return found
+    # 旧版（Electron 起独立 serve，token 注入子进程环境）保留作回退。
     for pid in _candidate_pids():
         env = _env_of(pid)
         token = env.get(TOKEN_ENV, "")

@@ -96,6 +96,15 @@ class GatewayClient:
             self.ws = ws
             log.info("gateway connected %s", self.url.split("?")[0])
             self._reader = asyncio.create_task(self._read_loop(ws))
+            # 0.22.x 的网关只把 ``gateway.ready`` 发给第一个连上的客户端（通常是桌面端），
+            # 后连的客户端收不到 —— 若等 ready 再声明能力，``client.capabilities`` 永远发不出去，
+            # 后端于是按「老客户端」处理，审批/提问一律不推。读循环起来后立刻声明。
+            try:
+                res = await self.call("client.capabilities", {"server_requests": True}, timeout=5)
+                self.server_requests = list((res or {}).get("server_requests") or [])
+                log.info("client.capabilities ok (%d 类服务端请求)", len(self.server_requests))
+            except Exception as exc:  # 老后端不认这个方法也要继续
+                log.warning("client.capabilities failed: %s", exc)
             try:
                 await self._reader
             finally:
@@ -233,6 +242,32 @@ class GatewayClient:
             frame["result"] = result or {}
         await self._send(frame)
 
+    async def approval_pending(self, session_id: str) -> list[dict]:
+        """0.22.x：待批审批不进 srq 帧，只能问这个（内部是 gateway 的审批队列）。"""
+        res = await self.call("approval.pending", {"session_id": session_id}) or {}
+        rows = res.get("approvals")
+        return [dict(r) for r in rows] if isinstance(rows, list) else []
+
+    async def approval_respond(self, session_id: str, execution_generation: int,
+                               prompt_id: str, choice: str) -> dict:
+        """回答 canonical 协议下的待批请求（``prompt_id`` 来自 resume 快照的 ``pending``）。"""
+        return await self.call("approval.respond", {
+            "session_id": session_id,
+            "execution_generation": execution_generation,
+            "prompt_id": prompt_id,
+            "choice": choice,
+        }) or {}
+
+    async def clarify_respond(self, session_id: str, execution_generation: int,
+                              prompt_id: str, answer: str) -> dict:
+        """回答 canonical 协议下的 clarify（``answer`` 为空串 = 跳过）。"""
+        return await self.call("clarify.respond", {
+            "session_id": session_id,
+            "execution_generation": execution_generation,
+            "prompt_id": prompt_id,
+            "answer": answer,
+        }) or {}
+
     async def answer_via_rpc(self, request_id: str, result: dict) -> dict:
         """没收到帧时（例如桥重启后只看到 open_requests）用 RPC 代答。"""
         return await self.call("request.answer", {"id": request_id, "result": result})
@@ -260,14 +295,32 @@ class GatewayClient:
         return [r for r in rows if isinstance(r, dict)]
 
     async def attach(self, session_id: str) -> dict:
-        res = await self.call("session.activate", {"session_id": session_id,
-                                                   "omit_messages": True})
-        self.session_id = session_id
-        return res or {}
+        # 0.22.x 起网关把 ``session.activate`` 换成了 ``session.resume``（activate 回 -32601
+        # unknown method）；老网关反过来。两个都试，先新的。
+        last: GatewayError | None = None
+        for method in ("session.resume", "session.activate"):
+            try:
+                res = await self.call(method, {"session_id": session_id,
+                                               "omit_messages": True})
+            except GatewayError as exc:
+                last = exc
+                if getattr(exc, "code", None) == -32601:  # 这个方法这版没有，换另一个
+                    continue
+                raise
+            self.session_id = session_id
+            return res or {}
+        raise last or GatewayError(-1, "attach failed")
 
     async def events_since(self, session_id: str, last_seen: int) -> dict:
-        return await self.call("session.events.since",
-                               {"session_id": session_id, "last_seen": last_seen}) or {}
+        res = await self.call("session.events.since",
+                              {"session_id": session_id, "last_seen": last_seen}) or {}
+        # 0.22.x 回 ``latest_seq`` + ``truncated``/``snapshot_required``：服务端只保留最近一段事件，
+        # 从 0 开始拉永远被判「太旧」，于是 count 恒为 0、实时事件也永远追不上。第一次拿到
+        # latest_seq 就跳过去，之后靠事件帧里的 seq 递增。
+        latest = res.get("latest_seq")
+        if isinstance(latest, int) and latest > self.last_seen:
+            self.last_seen = latest
+        return res
 
     async def interrupt(self, session_id: str) -> dict:
         try:

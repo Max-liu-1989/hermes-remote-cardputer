@@ -75,6 +75,7 @@ static String g_state_line = "BOOT";
 
 // 录音
 static bool g_recording = false;
+static uint32_t g_rec_bytes = 0;
 static uint32_t g_rec_start_ms = 0;
 static int16_t g_pcm[MIC_CHUNK_SAMPLES];
 static uint8_t g_voice_buf[hr::VOICE_HEADER_LEN + MIC_CHUNK_SAMPLES * 2];
@@ -529,6 +530,7 @@ static void start_recording() {
   }
   g_recording = true;
   g_rec_start_ms = millis();
+  g_rec_bytes = 0;
   // 立刻给本地反馈：按住没反应＝不知道在录没在录（桥的“录音中”页要等下一帧才到）
   M5.Speaker.setVolume(70);
   M5.Speaker.tone(2400, 40);
@@ -550,13 +552,22 @@ static void pump_recording() {
   const size_t bytes = MIC_CHUNK_SAMPLES * sizeof(int16_t);
   const size_t n = hr::build_voice_chunk((const uint8_t*)g_pcm, bytes, g_voice_buf, sizeof(g_voice_buf));
   if (n > 0 && g_linked) {
-    g_ws.sendBIN(g_voice_buf, n);
+    if (g_ws.sendBIN(g_voice_buf, n)) {
+      g_rec_bytes += bytes;
+    }
   }
 }
 
 static void finish_recording() {
   if (!g_recording) return;
   g_recording = false;
+  // 把这句实际录到多少字节报给桥：桥收到的比这少，就是网络把语音帧丢了
+  {
+    char buf[96];
+    snprintf(buf, sizeof(buf), "{\"t\":\"log\",\"m\":\"rec %lums %lu bytes\"}",
+             (unsigned long)(millis() - g_rec_start_ms), (unsigned long)g_rec_bytes);
+    send_json(String(buf));
+  }
   send_json("{\"t\":\"voice.end\"}");
   M5.Mic.end();
   show_state("识别中…");

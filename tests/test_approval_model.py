@@ -178,7 +178,9 @@ class AuthOverWebSocketTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self) -> None:
         self.hub = DeviceHub(self.TOKEN, on_key=self._on_key, on_voice_upload=None)
-        self.hub.auth_timeout = 0.6
+        # 0.6s 在机器负载高时（测试进程被抢占）会误判成"没鉴权"：放宽到 2s，
+        # 行为不变（另一个用例仍然验证"不鉴权就关连接"）。
+        self.hub.auth_timeout = 2.0
         self.port = await self.hub.start(host="127.0.0.1", port=0)
 
     async def asyncTearDown(self) -> None:

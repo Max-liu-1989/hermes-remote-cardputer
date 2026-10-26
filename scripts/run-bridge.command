@@ -1,16 +1,21 @@
 #!/bin/bash
-# 双击运行：在终端里起 Hermes 遥控桥（前台，日志直接打在窗口里）
-# 桌面 App 重启换端口也没关系：--rediscover 会自己重找。
+# Hermes 遥控终端桥（局域网设备端口 47823）
+#
+# 后端：独立 `hermes serve` on 127.0.0.1:9119。
+# 为什么不用 --rediscover：桌面 App 0.22.x 改成内嵌 gateway（随机端口 + 内存 token），
+# 外部进程读不到凭证；改为本机固定 9119 + 固定 token，桌面 App 重启后会 attach 同一个后端。
 set -euo pipefail
-cd "$(dirname "$0")/.."
 
-if [[ ! -x .venv/bin/python ]]; then
-  echo "先装一次依赖："
-  echo "  cd $(pwd) && uv venv --python 3.11 .venv && uv pip install --python .venv/bin/python -e '.[serial]'"
+cd "$(dirname "$0")/.."
+export PYTHONPATH="$PWD"
+
+TOKEN_FILE="$HOME/.hermes-remote/backend.token"
+if [ ! -s "$TOKEN_FILE" ]; then
+  echo "缺少后端 token：$TOKEN_FILE"
+  echo "起后端：HERMES_DASHBOARD_SESSION_TOKEN=\$(cat $TOKEN_FILE) hermes serve --port 9119"
   exit 1
 fi
 
-export PYTHONPATH="$(pwd)"
-# 转写模型：small 中文够用且快（base 会把 token 听成"周根"）；换模型只影响这一行
-export HERMES_REMOTE_STT_MODEL="${HERMES_REMOTE_STT_MODEL:-small}"
-exec .venv/bin/python -m hermes_remote.cli -v run --rediscover "$@"
+exec .venv/bin/python -m hermes_remote.cli -v run \
+  --rediscover \
+  --no-beacon --no-keep-awake

@@ -1,26 +1,11 @@
-# ── Python ──
 __pycache__/
-*.py[cod]
+*.pyc
 *.egg-info/
 .venv/
-venv/
 build/
-dist/
-.pytest_cache/
-
-# ── PlatformIO / 固件编译产物 ──
 .pio/
-.pioenvs/
-.piolibdeps/
-firmware/.pio/
-
-# ── 运行时与凭据（绝不入库） ──
 *.token
-device.token
 audit*.jsonl
 *.log
-.env
-.env.*
-
-# ── macOS ──
 .DS_Store
+~/

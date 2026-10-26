@@ -41,6 +41,26 @@ class TranscriptionUnavailable(RuntimeError):
     pass
 
 
+def _force_offline_if_cached() -> None:
+    """模型已缓存时不让 HF 再联网检查：本机 fake-ip 代理下这一步会卡几分钟。
+
+    顺带把代理变量从这个进程摘掉——桥只连 127.0.0.1 的后端，不需要代理，
+    而 torch / huggingface_hub 一旦走代理就会长时间阻塞。
+    """
+    import glob
+    import os
+    from pathlib import Path
+
+    hub = Path(os.environ.get("HF_HOME", Path.home() / ".cache/huggingface")) / "hub"
+    if not glob.glob(str(hub / "models--mlx-community--whisper-*")):
+        return
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+    for key in ("http_proxy", "https_proxy", "all_proxy",
+                "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+        os.environ.pop(key, None)
+
+
 class Transcriber:
     """懒加载的 faster-whisper 封装。"""
 
@@ -70,6 +90,7 @@ class Transcriber:
 
     # ── 后端选择 ────────────────────────────────────────────────────────────
     def _ensure_backend(self) -> str:
+        _force_offline_if_cached()
         """挑后端：Apple Silicon 上 mlx-whisper 快 5 倍以上，其余走 faster-whisper。"""
         if self._backend:
             return self._backend
@@ -102,10 +123,10 @@ class Transcriber:
         try:
             self._ensure_backend()
             if self._backend == "mlx":
-                import numpy as np
-                silence = np.zeros(8000, dtype="float32")   # 0.5s 静音
-                self._mlx.transcribe(silence, path_or_hf_repo=MLX_REPO, language="zh",
-                                     initial_prompt=DEFAULT_PROMPT)
+                # 只把权重加载进来，不跑推理：拿静音去 transcribe 会在 mlx 内部
+                # max() 空序列上抛异常（真机日志：stt warmup: False (max() arg is an empty sequence)）
+                from mlx_whisper.load_models import load_model
+                load_model(MLX_REPO)
                 return True, "mlx warm"
             self._ensure_model()
             return True, "ct2 warm"
@@ -177,7 +198,13 @@ class FakeTranscriber:
         self.text = text
         self.calls: list[int] = []
 
+    #: 让桥知道这是假识别器（音频体检等真实链路检查可以跳过）
+    is_fake = True
+
     def preflight(self) -> tuple[bool, str]:
+        return True, "fake"
+
+    def warmup(self) -> tuple[bool, str]:
         return True, "fake"
 
     def transcribe(self, pcm: bytes, *, rate: int = 16000, language: str = "zh",

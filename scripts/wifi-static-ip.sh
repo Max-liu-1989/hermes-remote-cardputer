@@ -1,7 +1,7 @@
 #!/bin/bash
-# 在家的 Linksys Wi-Fi 上用固定 IP（板子配网时钉死 192.168.2.140），换到别的网络自动回 DHCP。
+# 在家的 Linksys Wi-Fi 上用固定 IP（板子配网时钉死 <bridge-ip>），换到别的网络自动回 DHCP。
 #
-# 为什么需要：Cardputer 里存的是 `HOST 192.168.2.140:47823`，Mac 的 IP 一变板子就显示
+# 为什么需要：Cardputer 里存的是 `HOST <bridge-ip>:47823`，Mac 的 IP 一变板子就显示
 # bridge offline。而 macOS 的「私有 Wi-Fi 地址」是随机 MAC，路由器按 MAC 做 DHCP 绑定
 # 对不上（实测同一台 Mac 十分钟拿到过 .174 / .175 两个地址）。
 #
@@ -14,11 +14,11 @@ set -u
 
 IFACE="${HR_WIFI_IFACE:-en0}"
 SERVICE="${HR_WIFI_SERVICE:-Wi-Fi}"
-STATIC_IP="${HR_STATIC_IP:-192.168.2.140}"
+STATIC_IP="${HR_STATIC_IP:-<bridge-ip>}"
 MASK="${HR_STATIC_MASK:-255.255.255.0}"
-GATEWAY="${HR_STATIC_GW:-192.168.2.1}"
-# 家里的 SSID 前缀（不区分大小写）：Linksys425 / linksys425-5G / linksys425-5 都命中
-HOME_PATTERN="${HR_HOME_SSID_PATTERN:-^linksys425}"
+GATEWAY="${HR_STATIC_GW:-<gateway-ip>}"
+# 家里的 SSID 前缀（不区分大小写）：<home-ssid> / <home-ssid>-5G / <home-ssid>-5 都命中
+HOME_PATTERN="${HR_HOME_SSID_PATTERN:-^<home-ssid>}"
 
 DRY=0
 [ "${1:-}" = "--dry-run" ] && DRY=1

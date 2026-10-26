@@ -53,7 +53,7 @@ echo "复制下面整段到终端执行："
 echo
 cat <<EOF
 sudo tee /etc/sudoers.d/hermes-remote-wifi >/dev/null <<'RULES'
-$(id -un) ALL=(root) NOPASSWD: /usr/sbin/networksetup -setmanual Wi-Fi 192.168.2.140 255.255.255.0 192.168.2.1
+$(id -un) ALL=(root) NOPASSWD: /usr/sbin/networksetup -setmanual Wi-Fi <bridge-ip> 255.255.255.0 <gateway-ip>
 $(id -un) ALL=(root) NOPASSWD: /usr/sbin/networksetup -setdhcp Wi-Fi
 RULES
 sudo chmod 440 /etc/sudoers.d/hermes-remote-wifi

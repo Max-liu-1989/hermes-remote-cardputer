@@ -90,6 +90,7 @@ class Bridge:
         self.sleep = None
         self._last_snapshot_at = 0.0
         self._last_event_poll_at = 0.0
+        self._last_pending_poll_at = 0.0
         self._status_at = 0.0
         self._interrupt_armed_at: float | None = None
 
@@ -808,6 +809,44 @@ class Bridge:
 
     async def _deliver(self, req: PendingRequest, result: dict) -> tuple[bool, str]:
         """返回 (是否送达, 状态)。状态会进审计，方便事后对账。"""
+        if req.method == "approval":
+            # 0.22.x：审批不经过 srq，`request.answer` 结算不到它 —— 走 approval.respond
+            # （参数是网关审批队列的 request_id + choice）。老后端不认就落回下面的老路径。
+            choice = str(result.get("choice") or "deny")
+            generation = req.params.get("execution_generation")
+            if req.params.get("canonical") and isinstance(generation, int):
+                # canonical：prompt_id + execution_generation（缺一不可，否则 invalid_params）
+                try:
+                    res = await self.gateway.approval_respond(
+                        req.session_id, generation, req.id, choice)
+                    if (res or {}).get("resolved") == 0:
+                        return False, "expired"
+                    return True, "approval.respond"
+                except RpcError as exc:
+                    if exc.code not in (-32601, -32602):
+                        log.warning("approval.respond failed: %s %s", exc.code, exc.message)
+                        return False, exc.message or str(exc)
+                except GatewayError as exc:
+                    return False, str(exc)
+            # 非 canonical（老后端）：落回下面的 request.answer
+        if req.method == "clarify":
+            # canonical：clarify.respond 只收单个字符串答案（空串 = 跳过）
+            generation = req.params.get("execution_generation")
+            if req.params.get("canonical") and isinstance(generation, int):
+                answers = result.get("answers") or {}
+                answer = next((str(v) for v in answers.values() if v), "") if isinstance(answers, dict) else ""
+                try:
+                    res = await self.gateway.clarify_respond(
+                        req.session_id, generation, req.id, answer)
+                    if str((res or {}).get("status") or "") in ("resolved", "already_resolved"):
+                        return True, "clarify.respond"
+                    return False, str((res or {}).get("status") or "unknown")
+                except RpcError as exc:
+                    if exc.code not in (-32601, -32602):
+                        log.warning("clarify.respond failed: %s %s", exc.code, exc.message)
+                        return False, exc.message or str(exc)
+                except GatewayError as exc:
+                    return False, str(exc)
         try:
             res = await self.gateway.answer_via_rpc(req.id, result)
         except RpcError as exc:
@@ -1045,6 +1084,61 @@ class Bridge:
         # 注意：这份 open_requests **不含** clarify/approval 这类 srq- 服务端请求，
         # 拿它撤卡会把刚推上来的卡片 2 秒内误删（真机"卡片一闪而过"）。撤卡只靠
         # cancel 事件 / 作答 / STALE_AFTER_S 超时。
+        #
+        # 0.22.x：审批改走网关自己的审批队列（不进 srq），轮询补上；id 用队列里的 request_id，
+        # 作答走 approval.respond（见 _deliver）。去重仍交给 on_server_request。
+        try:
+            for entry in await self.gateway.approval_pending(sid):
+                rid = str(entry.get("request_id") or "")
+                if not rid:
+                    continue
+                await self.on_server_request({"id": rid, "method": "approval",
+                                              "params": {**entry, "session_id": sid}})
+        except GatewayError:
+            pass
+
+        # 0.22.x 的 canonical 协议把**待答请求**放在 ``session.resume`` 快照的 ``prompts`` 里
+        # （注意：``pending`` 是排队中的用户输入，不是审批），元素是
+        # ``{kind: approval|clarify, prompt_id, choices, command, description, question,
+        # execution_generation}``；作答要用 ``prompt_id`` + ``execution_generation``
+        # （``approval.pending`` 那套是另一套 id，回答会被判 invalid_params）。
+        # 快照较大，所以 5 秒一次；请求的上屏延迟最坏 5 秒，可接受。
+        now = time.time()
+        if now - self._last_pending_poll_at >= 5.0:
+            self._last_pending_poll_at = now
+            try:
+                snap = await self.gateway.attach(sid)
+            except GatewayError:
+                snap = {}
+            for entry in (snap or {}).get("prompts") or []:
+                if not isinstance(entry, dict):
+                    continue
+                kind = str(entry.get("kind") or "")
+                pid = str(entry.get("prompt_id") or "")
+                if kind not in ("approval", "clarify") or not pid:
+                    continue
+                await self.on_server_request({
+                    "id": pid, "method": kind,
+                    "params": {
+                        "session_id": sid,
+                        "execution_generation": entry.get("execution_generation"),
+                        "tool_name": entry.get("tool_name") or "",
+                        "command": entry.get("command"),
+                        "description": entry.get("description"),
+                        # canonical 是平铺的 question + choices；桥的渲染/折行/键位按
+                        # ``questions: [{qid, question, choices, multi_select}]`` 走，这里搭桥。
+                        "question": entry.get("question"),
+                        "choices": entry.get("choices") or [],
+                        "questions": [{
+                            "qid": pid,
+                            "question": entry.get("question") or "",
+                            "choices": entry.get("choices") or [],
+                            "multi_select": bool(entry.get("multi_select")),
+                        }],
+                        "multi_select": entry.get("multi_select"),
+                        "canonical": True,
+                    },
+                })
 
     def _absorb_open_requests(self, snap: dict) -> None:
         """把快照里“还开着的请求”补齐到屏上（队列最多 8 个，先到先答）。"""
